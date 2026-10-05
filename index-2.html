@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EV Traction Control Simulation</title>
+<style>
+:root{--bg:#eef2f5;--panel:#fff;--ink:#14202b;--mute:#5d6b78;--line:#d5dde4;--on:#00857c;--off:#d6452f;--thr:#c98a00;--road:#3a4651}
+@media(prefers-color-scheme:dark){:root{--bg:#0e151c;--panel:#16202a;--ink:#e6edf3;--mute:#93a3b1;--line:#293845;--on:#2cc7b8;--off:#ff7a62;--thr:#f0b429;--road:#27323c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:1080px;margin:0 auto;padding:28px 16px 48px}
+h1{font-size:clamp(1.6rem,4vw,2.4rem);line-height:1.15;margin:0 0 8px;letter-spacing:-.02em}
+.lede{color:var(--mute);max-width:64ch;margin:0 0 22px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:16px}
+.top{display:grid;grid-template-columns:260px 1fr;gap:16px;margin-bottom:16px}
+.top .panel{margin:0}
+@media(max-width:760px){.top{grid-template-columns:1fr}}
+label{display:block;font-size:.88rem;color:var(--mute);margin:10px 0 3px}
+label output{color:var(--ink);font-variant-numeric:tabular-nums;float:right}
+select,input[type=range],button{width:100%;font:inherit}
+select{padding:7px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+.btns{display:flex;gap:8px;margin-top:14px}
+button{padding:8px;border-radius:6px;border:1px solid var(--ink);background:var(--ink);color:var(--bg);cursor:pointer}
+button.alt{background:transparent;color:var(--ink)}
+:focus-visible{outline:3px solid var(--thr);outline-offset:2px}
+canvas{display:block;width:100%}
+#road{height:170px;border-radius:6px}
+.read{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0;padding:0}
+.read div{padding:12px 16px;border-right:1px solid var(--line)}
+.read div:last-child{border-right:0}
+.read b{display:block;font-size:1.6rem;font-variant-numeric:tabular-nums;line-height:1.2}
+.read span{font-size:.85rem;color:var(--mute)}
+h2{font-size:1.05rem;margin:0 0 2px}
+.leg{font-size:.85rem;color:var(--mute);margin:0 0 8px}
+.leg i{display:inline-block;width:18px;height:0;border-top:3px solid;vertical-align:middle;margin:0 4px 0 10px}
+.leg i.d{border-top-style:dashed}
+.on{color:var(--on)}.off{color:var(--off)}
+#cA{height:220px}#cB,#cC{height:170px}
+.how h2{margin-bottom:6px}
+.how p,.how li{font-size:.92rem;color:var(--mute);max-width:78ch}
+.how code{font:.88rem ui-monospace,Menlo,Consolas,monospace;color:var(--ink)}
+.how ul{padding-left:18px;margin:6px 0}
+</style>
+</head>
+<body>
+<main>
+<h1>Traction control on a low-grip road</h1>
+<p class="lede">Two identical EVs launch at full pedal. The teal car runs a traction control loop that cuts motor current when the wheels slip. The red car has no control. Change the surface and watch the wheel speed pull away from the vehicle speed.</p>
+
+<div class="top">
+  <div class="panel">
+    <label for="sc">Road surface</label>
+    <select id="sc">
+      <option value="icepatch">Dry, ice patch, dry</option>
+      <option value="jump">Ice, then dry (grip jump)</option>
+      <option value="wet">Wet asphalt</option>
+      <option value="snow">Packed snow</option>
+      <option value="ice">Black ice</option>
+    </select>
+    <label for="thr">Slip threshold <output id="thrO"></output></label>
+    <input id="thr" type="range" min="0.04" max="0.3" step="0.01" value="0.10">
+    <label for="ki">Controller gain <output id="kiO"></output></label>
+    <input id="ki" type="range" min="15" max="150" step="5" value="60">
+    <label for="sp">Playback speed</label>
+    <select id="sp"><option value="0.25">0.25x</option><option value="0.5">0.5x</option><option value="1" selected>1x</option><option value="2">2x</option></select>
+    <div class="btns"><button id="pp">Pause</button><button id="rs" class="alt">Restart</button></div>
+  </div>
+  <div class="panel"><canvas id="road" aria-label="Side view of both cars on the road"></canvas></div>
+</div>
+
+<div class="panel read" id="read">
+  <div><b id="rV">0</b><span>Speed with control (km/h)</span></div>
+  <div><b id="rS">0.00</b><span>Slip ratio with control</span></div>
+  <div><b id="rC">0%</b><span>Torque cut by controller</span></div>
+  <div><b id="rI">0</b><span>Motor current (A)</span></div>
+  <div><b id="rT">-</b><span id="rTl">Time to 50 km/h</span></div>
+</div>
+
+<div class="panel">
+  <h2>Wheel speed and vehicle speed</h2>
+  <p class="leg"><span class="on">With control</span><span class="off" style="margin-left:12px">No control</span><i class="s" style="border-color:var(--mute)"></i>vehicle speed<i class="d" style="border-color:var(--mute)"></i>wheel speed (rim speed, km/h)</p>
+  <canvas id="cA"></canvas>
+</div>
+<div class="panel">
+  <h2>Slip ratio</h2>
+  <p class="leg"><span class="on">With control</span><span class="off" style="margin-left:12px">No control</span><i style="border-color:var(--thr)" class="d"></i>threshold</p>
+  <canvas id="cB"></canvas>
+</div>
+<div class="panel">
+  <h2>Torque reduction response</h2>
+  <p class="leg"><i style="border-color:var(--mute)"></i>driver request<i style="border-color:var(--on)"></i>applied, with control<i style="border-color:var(--off)"></i>applied, no control (Nm at the wheels). Blue shading marks low-grip road.</p>
+  <canvas id="cC"></canvas>
+</div>
+
+<div class="panel how">
+  <h2>How the control law works</h2>
+  <ul>
+    <li>Slip ratio on acceleration: <code>slip = (wheel_speed - vehicle_speed) / max(wheel_speed, 2 m/s)</code></li>
+    <li>Every 1 ms: <code>scale = clamp(scale - gain * (slip_filtered - threshold) * dt, 0.04, 1)</code></li>
+    <li>Commanded torque: <code>pedal * Tmax * scale</code>, so motor current falls with it (current = torque / gear / Kt)</li>
+    <li>Tire force uses a Pacejka magic formula scaled by the surface friction. The motor torque has a 12 ms lag.</li>
+  </ul>
+  <p>This is the ABS loop mirrored. ABS releases brake pressure when the wheel runs slower than the car. Traction control cuts drive torque when the wheel runs faster than the car. Both hold slip near the peak of the friction curve, where grip is highest.</p>
+</div>
+</main>
+
+<script>
+const $=id=>document.getElementById(id);
+const P={m:1500,g:9.81,r:.32,J:4,fz:.55,Tmax:2200,Pmax:2e5,gear:8,kt:.9,tau:.012};
+const SC={
+  icepatch:{f:x=>(x<12||x>50)?1:.12},
+  jump:{f:x=>x<25?.12:1},
+  wet:{f:()=>.6},
+  snow:{f:()=>.3},
+  ice:{f:()=>.12}
+};
+const TEND=10,H=2e-4,SUB=50;
+let cfg={thr:.1,ki:60},sc=SC.icepatch,on,off,acc=0,run=true,speed=1,last=0;
+
+class Sim{
+  constructor(tc){this.tc=tc;this.reset()}
+  reset(){
+    Object.assign(this,{t:0,v:0,w:0,x:0,th:0,thf:0,s:1,Ta:0,lf:0,ca:0,k:0,lam:0,t50:null,pk:0,req:0,I:0});
+    this.d={t:[],v:[],wr:[],lam:[],req:[],Ta:[],mu:[]};
+  }
+  step(dt,cfg){
+    const ped=Math.min(1,Math.max(0,(this.t-.3)/.3));
+    this.req=ped*Math.min(P.Tmax,P.Pmax/Math.max(this.w,1));
+    const wr=this.w*P.r;
+    const lam=Math.max(-1,Math.min(1,(wr-this.v)/Math.max(wr,2)));
+    this.lam=lam;
+    if(this.tc){
+      this.ca+=dt;
+      if(this.ca>=.001){
+        const h=this.ca;this.ca=0;
+        this.lf+=(lam-this.lf)*h/(.004+h);
+        this.s=Math.min(1,Math.max(.04,this.s-cfg.ki*(this.lf-cfg.thr)*h));
+      }
+    }
+    const Tt=this.req*(this.tc?this.s:1);
+    this.Ta+=(Tt-this.Ta)*dt/P.tau;
+    const mu=sc.f(this.x),B=10,bl=B*lam;
+    const Fx=mu*P.fz*P.m*P.g*Math.sin(1.9*Math.atan(bl-.97*(bl-Math.atan(bl))));
+    this.w=Math.max(0,this.w+(this.Ta-Fx*P.r)/P.J*dt);
+    const Fd=.39*this.v*this.v+.012*P.m*P.g;
+    this.v=Math.max(0,this.v+(Fx-Fd)/P.m*dt);
+    this.x+=this.v*dt;this.th+=this.w*dt;this.thf+=this.v/P.r*dt;this.t+=dt;
+    this.I=this.Ta/P.gear/P.kt;
+    if(lam>this.pk)this.pk=lam;
+    if(this.t50===null&&this.v>=13.89)this.t50=this.t;
+    if(++this.k%SUB===0){
+      const d=this.d;
+      d.t.push(this.t);d.v.push(this.v*3.6);d.wr.push(this.w*P.r*3.6);
+      d.lam.push(Math.max(0,lam));d.req.push(this.req);d.Ta.push(this.Ta);d.mu.push(mu);
+    }
+  }
+}
+
+function init(){
+  cfg.thr=+$('thr').value;cfg.ki=+$('ki').value;
+  $('thrO').textContent=cfg.thr.toFixed(2);$('kiO').textContent=cfg.ki;
+  sc=SC[$('sc').value];speed=+$('sp').value;
+  on=new Sim(true);off=new Sim(false);acc=0;run=true;$('pp').textContent='Pause';
+}
+['sc','thr','ki'].forEach(i=>$(i).addEventListener('input',init));
+$('sp').addEventListener('input',()=>speed=+$('sp').value);
+$('rs').onclick=init;
+$('pp').onclick=()=>{run=!run;$('pp').textContent=run?'Pause':'Resume'};
+
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function setup(cv){
+  const dpr=window.devicePixelRatio||1,W=cv.clientWidth,Hh=cv.clientHeight;
+  if(cv.width!==Math.round(W*dpr)){cv.width=Math.round(W*dpr);cv.height=Math.round(Hh*dpr)}
+  const c=cv.getContext('2d');c.setTransform(dpr,0,0,dpr,0,0);c.clearRect(0,0,W,Hh);
+  return {c,W,H:Hh};
+}
+
+function chart(cv,lines,o){
+  const {c,W,H:Hh}=setup(cv);
+  const L=48,R=10,T=8,B=22,pw=W-L-R,ph=Hh-T-B;
+  const X=t=>L+t/TEND*pw,Y=v=>T+ph-(v-o.min)/(o.max-o.min)*ph;
+  const d=on.d;
+  for(let i=0;i<d.t.length-1;i++){
+    const a=(1-d.mu[i])*.28;
+    if(a>.01){c.fillStyle='rgba(80,150,230,'+a+')';c.fillRect(X(d.t[i]),T,X(d.t[i+1])-X(d.t[i])+.5,ph)}
+  }
+  c.font='12px system-ui,sans-serif';c.fillStyle=css('--mute');c.strokeStyle=css('--line');c.lineWidth=1;
+  c.textAlign='right';
+  for(let k=0;k<=4;k++){
+    const v=o.min+(o.max-o.min)*k/4,y=Y(v);
+    c.beginPath();c.moveTo(L,y);c.lineTo(W-R,y);c.stroke();
+    c.fillText(o.fmt?o.fmt(v):Math.round(v),L-6,y+4);
+  }
+  c.textAlign='center';
+  for(let t=0;t<=TEND;t+=2){c.fillText(t+' s',X(t),Hh-6)}
+  if(o.hline!=null){
+    c.strokeStyle=css('--thr');c.lineWidth=1.5;c.setLineDash([6,4]);
+    c.beginPath();c.moveTo(L,Y(o.hline));c.lineTo(W-R,Y(o.hline));c.stroke();c.setLineDash([]);
+  }
+  c.save();c.beginPath();c.rect(L,T-2,pw,ph+4);c.clip();
+  for(const l of lines){
+    c.strokeStyle=css(l.c);c.lineWidth=l.w||2;c.setLineDash(l.dash||[]);
+    c.beginPath();
+    l.y.forEach((v,i)=>{const px=X(l.x[i]),py=Y(Math.min(o.max,Math.max(o.min,v)));i?c.lineTo(px,py):c.moveTo(px,py)});
+    c.stroke();
+  }
+  c.restore();c.setLineDash([]);
+}
+
+function wheel(c,x,y,r,ang,hot){
+  c.fillStyle='#10161c';c.beginPath();c.arc(x,y,r,0,7);c.fill();
+  c.strokeStyle=hot?'#ff4b2b':'#b9c4cd';c.lineWidth=hot?3:2;
+  for(let i=0;i<3;i++){const a=ang+i*Math.PI*2/3;c.beginPath();c.moveTo(x,y);c.lineTo(x+Math.cos(a)*(r-2),y+Math.sin(a)*(r-2));c.stroke()}
+}
+
+function road(){
+  const {c,W,H:Hh}=setup($('road'));
+  const span=60,sc_=W/span,lead=Math.max(on.x,off.x),cam=Math.max(0,lead-34);
+  const lh=Hh/2;
+  for(let px=0;px<W;px+=4){
+    const wx=cam+(px-40)/sc_,mu=wx<0?1:sc.f(wx);
+    c.fillStyle=css('--road');c.fillRect(px,0,4,Hh);
+    if(mu<.99){c.fillStyle='rgba(170,215,255,'+(1-mu)*.75+')';c.fillRect(px,0,4,Hh)}
+  }
+  c.strokeStyle='rgba(255,255,255,.55)';c.lineWidth=2;c.setLineDash([14,12]);c.lineDashOffset=cam*sc_%26;
+  c.beginPath();c.moveTo(0,lh);c.lineTo(W,lh);c.stroke();c.setLineDash([]);
+  [[on,0,'--on','Traction control on'],[off,1,'--off','No control']].forEach(([s,i,col,name])=>{
+    const base=i*lh+lh-14,cx=40+(s.x-cam)*sc_;
+    c.font='12px system-ui,sans-serif';c.textAlign='left';c.fillStyle='#fff';c.fillText(name,8,i*lh+16);
+    if(cx<-30){c.fillText('<< '+(lead-s.x).toFixed(0)+' m behind',8,i*lh+34);return}
+    c.fillStyle=css(col);c.beginPath();c.roundRect(cx-30,base-30,60,22,6);c.fill();
+    c.fillStyle='rgba(255,255,255,.55)';c.fillRect(cx+4,base-27,18,9);
+    wheel(c,cx-18,base-4,9,s.th,s.lam>cfg.thr*1.5);
+    wheel(c,cx+18,base-4,9,s.thf,false);
+  });
+}
+
+function readouts(){
+  const set=(i,t)=>$(i).textContent=t;
+  set('rV',(on.v*3.6).toFixed(0));set('rS',Math.max(0,on.lam).toFixed(2));
+  set('rC',((1-on.s)*100).toFixed(0)+'%');set('rI',on.I.toFixed(0));
+  const a=on.t50,b=off.t50;
+  $('rTl').textContent='Time to 50 km/h (no control)';
+  set('rT',a?a.toFixed(1)+' s ('+(b?b.toFixed(1)+' s':'not yet')+')':'-');
+}
+
+function draw(){
+  const a=on.d,b=off.d;
+  chart($('cA'),[
+    {x:b.t,y:b.wr,c:'--off',dash:[5,4]},{x:b.t,y:b.v,c:'--off'},
+    {x:a.t,y:a.wr,c:'--on',dash:[5,4]},{x:a.t,y:a.v,c:'--on'}
+  ],{min:0,max:Math.max(40,Math.ceil(Math.max(0,...a.wr,...b.wr)/20)*20),fmt:v=>Math.round(v)});
+  chart($('cB'),[{x:b.t,y:b.lam,c:'--off'},{x:a.t,y:a.lam,c:'--on'}],{min:0,max:1,hline:cfg.thr,fmt:v=>v.toFixed(2)});
+  chart($('cC'),[
+    {x:a.t,y:a.req,c:'--mute',w:1.5},{x:b.t,y:b.Ta,c:'--off'},{x:a.t,y:a.Ta,c:'--on',w:2.5}
+  ],{min:0,max:2400,fmt:v=>Math.round(v)});
+  road();readouts();
+}
+
+function tick(ts){
+  const dt=Math.min(.05,(ts-last)/1000||0);last=ts;
+  if(run&&on.t<TEND){
+    acc+=dt*speed;
+    while(acc>=H&&on.t<TEND){on.step(H,cfg);off.step(H,cfg);acc-=H}
+  }
+  draw();requestAnimationFrame(tick);
+}
+init();requestAnimationFrame(tick);
+</script>
+</body>
+</html>
